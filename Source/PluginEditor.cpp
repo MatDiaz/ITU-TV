@@ -15,13 +15,19 @@
 ItutvAudioProcessorEditor::ItutvAudioProcessorEditor (ItutvAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p)
 {
-    // Make sure that before the constructor has finished, you've set the
-    // editor's size to whatever you need it to be.
-    setSize (400, 300);
+    botonProcesar.reset (new ToggleButton ("botonProcesar"));
+    addAndMakeVisible (botonProcesar.get());
+    botonProcesar->setButtonText (TRANS("Processar"));
+    botonProcesar->addListener (this);
+
+    botonProcesar->setBounds (24, 96, 256, 64);
+
+    setSize (300, 300);
 }
 
 ItutvAudioProcessorEditor::~ItutvAudioProcessorEditor()
 {
+    botonProcesar = nullptr;
 }
 
 //==============================================================================
@@ -29,11 +35,17 @@ void ItutvAudioProcessorEditor::paint (Graphics& g)
 {
     // (Our component is opaque, so we must completely fill the background with a solid colour)
     g.fillAll (getLookAndFeel().findColour (ResizableWindow::backgroundColourId));
-
-    g.setColour (Colours::white);
-    g.setFont (15.0f);
-    g.drawFittedText ("Hello World!", getLocalBounds(), Justification::centred, 1);
 }
+
+
+void ItutvAudioProcessorEditor::buttonClicked (Button* buttonThatWasClicked)
+{
+    if (buttonThatWasClicked == botonProcesar.get())
+    {
+        processor.procesoActivo = botonProcesar->getToggleState();
+    }
+}
+
 
 void ItutvAudioProcessorEditor::resized()
 {

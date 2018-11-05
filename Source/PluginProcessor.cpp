@@ -24,6 +24,49 @@ ItutvAudioProcessor::ItutvAudioProcessor()
                        )
 #endif
 {
+    // Inicializacion de las variables del código
+    // Todas las variables necesarias para el filtro se ponen en 0
+    xn_1[0] = 0; xn_1[1] = 0; xn_1[2] = 0;
+    yn_1[0] = 0; yn_1[1] = 0; yn_1[2] = 0;
+    // ==========================================================
+    xn_2[0] = 0; xn_2[1] = 0; xn_2[2] = 0;
+    yn_2[0] = 0; yn_2[1] = 0; yn_2[2] = 0;
+    // Se inicializan los coeficientes de los filtros
+    // Coeficientes del Peaking
+    coeffPeak_A[0] = 1;
+    coeffPeak_A[1] = -1.69065929318241;
+    coeffPeak_A[2] = 0.73248077421585;
+    
+    coeffPeak_B[0] = 1.53512485958697;
+    coeffPeak_B[1] = -2.69169618940638;
+    coeffPeak_B[2] = 1.19839281085285;
+    
+    // Coeficientes del pasa altos
+    coeffPasaAltos_A[0] = 1;
+    coeffPasaAltos_A[1] = -1.99004745483398;
+    coeffPasaAltos_A[2] = 0.99007225036621;
+
+    coeffPasaAltos_B[0] = 1;
+    coeffPasaAltos_B[1] = -2;
+    coeffPasaAltos_B[2] = 1;
+    
+    //===========================================================
+    contTonoPuro = 0;
+    //===========================================================
+    
+    umbral = -24; // Umbral estipulado por la norma
+    
+    attackTime = 10; // Tiempos de ataque y Release en milisegundos
+    releaseTime = 500;
+    
+    valRef = 0;
+    Yl_Prev = 0;
+    
+    // ==========================================================
+    // Otras variables
+    procesoActivo = false;
+    contadorBufferCircular = 0;
+    RMS_Value = -70;
 }
 
 ItutvAudioProcessor::~ItutvAudioProcessor()
@@ -95,8 +138,30 @@ void ItutvAudioProcessor::changeProgramName (int index, const String& newName)
 //==============================================================================
 void ItutvAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
+    // 400 ms, pero en muestras
+    tiempoDeBufferEnMuestras = sampleRate * 0.4;
+    
+    // 75% del Buffer, en Muestras
+    tiempoDeBuffer75 = sampleRate * 0.3;
+    
+    // Si el buffer circular está vacío
+    if (bufferCircular == nullptr)
+    {
+        // Se le da un tamaño de 400ms (En muestras)
+        bufferCircular = new float[tiempoDeBufferEnMuestras];
+        // Se llena el buffer circular de ceros
+        memset(bufferCircular, 0, sizeof(float) * tiempoDeBufferEnMuestras);
+    }
+    // Se devuelve el contador a la primera posicion
+    contadorBufferCircular = 0;
+    
+    // Se convierten las constantes de tiempo del compresor
+    // de segundos, a muestras
+    tauAttackConstant = exp( -1 / (attackTime * sampleRate * 0.001));
+    tauReleaseConstant = exp( -1 / (releaseTime * sampleRate * 0.001));
+    
+    //=======================================================
+    FrecMuestreo = sampleRate;
 }
 
 void ItutvAudioProcessor::releaseResources()
@@ -133,29 +198,234 @@ void ItutvAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& 
 {
     ScopedNoDenormals noDenormals;
     auto totalNumInputChannels  = getTotalNumInputChannels();
-    auto totalNumOutputChannels = getTotalNumOutputChannels();
+    // auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
-    for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear (i, 0, buffer.getNumSamples());
-
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    if (procesoActivo)
     {
-        auto* channelData = buffer.getWritePointer (channel);
-
-        // ..do something to the data...
+        if (totalNumInputChannels == 1) // Si es mono
+        {
+            // Se toma el vector mono
+            float* channelMono = buffer.getWritePointer(0);
+            // Un ciclo for para recorrer el vector
+            for (int i = 0; i < buffer.getNumSamples(); i++)
+            {
+                /*
+                 float Seno = sin(2*3.14159*(contTonoPuro/FrecMuestreo) * 1000);
+                 if(++contTonoPuro > FrecMuestreo) { contTonoPuro = 0; }
+                 channelL[i] = Seno;
+                 channelR[i] = Seno;
+                 */
+                
+                // Se saca el mono de los dos canales
+                float sumaMono = channelMono[i];
+                // Filtro de Campana
+                xn_1[0] = sumaMono;
+                
+                yn_1[0] = (coeffPeak_B[0]*xn_1[0]) + (coeffPeak_B[1]*xn_1[1]) + (coeffPeak_B[2]*xn_1[2]) - (coeffPeak_A[1]*yn_1[1])-(coeffPeak_A[2]*yn_1[2]);
+                
+                xn_1[2] = xn_1[1];
+                xn_1[1] = xn_1[0];
+                
+                yn_1[2] = yn_1[1];
+                yn_1[1] = yn_1[0];
+                
+                // Filtro Pasa Altas
+                xn_2[0] = yn_1[0];
+                
+                yn_2[0] = (coeffPasaAltos_B[0]*xn_2[0]) + (coeffPasaAltos_B[1]*xn_2[1]) + (coeffPasaAltos_B[2]*xn_2[2]) - (coeffPasaAltos_A[1]*yn_2[1])-(coeffPasaAltos_A[2]*yn_2[2]);
+                
+                xn_2[2] = xn_2[1];
+                xn_2[1] = xn_2[0];
+                
+                yn_2[2] = yn_2[1];
+                yn_2[1] = yn_2[0];
+                
+                // channelL[i] = yn_2[0];
+                // channelR[i] = yn_2[0];
+                
+                // =================================================================
+                
+                bufferCircular[contadorBufferCircular] = yn_2[0];
+                
+                contadorBufferCircular = contadorBufferCircular + 1;
+                
+                // Si el contador sobrepasa el tamaño del buffer
+                // Se reinicia
+                if (contadorBufferCircular > tiempoDeBufferEnMuestras)
+                {
+                    contadorBufferCircular = 0;
+                }
+                // Durante cada buffer se ingresa el 25% de muestras nuevas
+                // Luego se calcula el RMS segun la norma con el 75% de muestras
+                // Viejas
+                if (contadorBufferCircular == (tiempoDeBuffer75 - 1))
+                {
+                    RMS_Value = calculaRMS(bufferCircular, tiempoDeBufferEnMuestras);
+                    RMS_Value = -0.691 + 10*log10(RMS_Value);
+                }
+                
+                // =================================================================
+                // Segmento de Compresion
+                
+                float valorObjetivo = 0;
+                // Si la sonoridad esta por encima del umbral
+                // El valor objetivo de la senal es el umbral
+                if (RMS_Value >= umbral)
+                    valorObjetivo = umbral;
+                else
+                    valorObjetivo = RMS_Value;
+                // Si no, el valor objetivo es el mismo de sonoridad
+                
+                // El delta de compresion es que tanto hay que multiplicar
+                // la senal para que alcance el nivel deseado
+                float deltaCompresion = RMS_Value - valorObjetivo;
+                
+                if (i == 0)
+                    valRef = deltaCompresion;
+                
+                float Yl_Actual;
+                
+                // Un compresor es un circuito RC, por lo que las constantes de tiempo
+                // se pueden expresar como un filtro, de primer orden
+                // Este es el filtrado
+                if (valRef > Yl_Prev)
+                {
+                    Yl_Actual = tauAttackConstant * Yl_Prev + (1 - tauAttackConstant) * deltaCompresion;
+                }
+                else
+                {
+                    Yl_Actual = tauReleaseConstant * Yl_Prev + (1 - tauReleaseConstant) * deltaCompresion;
+                }
+                // Todo se esta calculando en dB, por lo que se debe pasar a decimal
+                // nuevamente
+                float gainControl = pow(10, (-Yl_Actual/20));
+                Yl_Prev = Yl_Actual;
+                
+                // Se aplica el factor de ganancia a la senal
+                
+                channelMono[i] = channelMono[i] * gainControl;
+            }
+        }
+        else if (totalNumInputChannels == 2) // Si es estereo
+        {
+            // Se toma el vector L
+            float* channelL = buffer.getWritePointer(0);
+            // Se toma el vector R
+            float* channelR = buffer.getWritePointer(1);
+            // Un ciclo for para recorrer el vector
+            for (int i = 0; i < buffer.getNumSamples(); i++)
+            {
+                /*
+                float Seno = sin(2*3.14159*(contTonoPuro/FrecMuestreo) * 1000);
+                if(++contTonoPuro > FrecMuestreo) { contTonoPuro = 0; }
+                channelL[i] = Seno;
+                channelR[i] = Seno;
+                */
+                
+                // Se saca el mono de los dos canales
+                float sumaMono = (channelL[i] + channelR[i]) / 2;
+                // Filtro de Campana
+                xn_1[0] = sumaMono;
+                
+                yn_1[0] = (coeffPeak_B[0]*xn_1[0]) + (coeffPeak_B[1]*xn_1[1]) + (coeffPeak_B[2]*xn_1[2]) - (coeffPeak_A[1]*yn_1[1])-(coeffPeak_A[2]*yn_1[2]);
+                
+                xn_1[2] = xn_1[1];
+                xn_1[1] = xn_1[0];
+                
+                yn_1[2] = yn_1[1];
+                yn_1[1] = yn_1[0];
+                
+                // Filtro Pasa Altas
+                xn_2[0] = yn_1[0];
+                
+                yn_2[0] = (coeffPasaAltos_B[0]*xn_2[0]) + (coeffPasaAltos_B[1]*xn_2[1]) + (coeffPasaAltos_B[2]*xn_2[2]) - (coeffPasaAltos_A[1]*yn_2[1])-(coeffPasaAltos_A[2]*yn_2[2]);
+                
+                xn_2[2] = xn_2[1];
+                xn_2[1] = xn_2[0];
+                
+                yn_2[2] = yn_2[1];
+                yn_2[1] = yn_2[0];
+                
+                // channelL[i] = yn_2[0];
+                // channelR[i] = yn_2[0];
+                
+                // =================================================================
+            
+                bufferCircular[contadorBufferCircular] = yn_2[0];
+                
+                contadorBufferCircular = contadorBufferCircular + 1;
+                
+                // Si el contador sobrepasa el tamaño del buffer
+                // Se reinicia  
+                if (contadorBufferCircular > tiempoDeBufferEnMuestras)
+                {
+                    contadorBufferCircular = 0;
+                }
+                // Durante cada buffer se ingresa el 25% de muestras nuevas
+                // Luego se calcula el RMS segun la norma con el 75% de muestras
+                // Viejas
+                if (contadorBufferCircular == (tiempoDeBuffer75 - 1))
+                {
+                    RMS_Value = calculaRMS(bufferCircular, tiempoDeBufferEnMuestras);
+                    RMS_Value = -0.691 + 10*log10(RMS_Value);
+                }
+                
+                // =================================================================
+                // Segmento de Compresion
+                
+                float valorObjetivo = 0;
+                // Si la sonoridad esta por encima del umbral
+                // El valor objetivo de la senal es el umbral
+                if (RMS_Value >= umbral)
+                    valorObjetivo = umbral;
+                else
+                    valorObjetivo = RMS_Value;
+                // Si no, el valor objetivo es el mismo de sonoridad
+                
+                // El delta de compresion es que tanto hay que multiplicar
+                // la senal para que alcance el nivel deseado
+                float deltaCompresion = RMS_Value - valorObjetivo;
+                
+                if (i == 0)
+                    valRef = deltaCompresion;
+                
+                float Yl_Actual;
+                
+                // Un compresor es un circuito RC, por lo que las constantes de tiempo
+                // se pueden expresar como un filtro, de primer orden
+                // Este es el filtrado
+                if (valRef > Yl_Prev)
+                {
+                    Yl_Actual = tauAttackConstant * Yl_Prev + (1 - tauAttackConstant) * deltaCompresion;
+                }
+                else
+                {
+                    Yl_Actual = tauReleaseConstant * Yl_Prev + (1 - tauReleaseConstant) * deltaCompresion;
+                }
+                // Todo se esta calculando en dB, por lo que se debe pasar a decimal
+                // nuevamente
+                float gainControl = pow(10, (-Yl_Actual/20));
+                Yl_Prev = Yl_Actual;
+                
+                // Se aplica el factor de ganancia a la senal
+                
+                channelL[i] = channelL[i] * gainControl;
+                channelR[i] = channelR[i] * gainControl;
+            }
+        }
     }
+}
+
+float ItutvAudioProcessor::calculaRMS(float *bufferCircular, int tamBuffer)
+{
+    float RMS_Sum = 0;
+    
+    for (int i = 0; i < tamBuffer; i++)
+    {
+        RMS_Sum = RMS_Sum + pow(bufferCircular[i], 2);
+    }
+    
+    return RMS_Sum = RMS_Sum/(float) tamBuffer;
 }
 
 //==============================================================================
