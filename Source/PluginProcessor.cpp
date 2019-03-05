@@ -142,7 +142,7 @@ void ItutvAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     tiempoDeBufferEnMuestras = sampleRate * 0.4;
     
     // 75% del Buffer, en Muestras
-    tiempoDeBuffer75 = sampleRate * 0.3;
+    tiempoDeBuffer75 = sampleRate * 0.1;
     
     // Si el buffer circular está vacío
     if (bufferCircular == nullptr)
@@ -251,7 +251,7 @@ void ItutvAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& 
                 
                 // Si el contador sobrepasa el tamaño del buffer
                 // Se reinicia
-                if (contadorBufferCircular > tiempoDeBufferEnMuestras)
+                if (contadorBufferCircular >= tiempoDeBufferEnMuestras)
                 {
                     contadorBufferCircular = 0;
                 }
